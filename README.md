@@ -1,5 +1,7 @@
 # Voxtral TTS Audio Autoencoder - Gradient-Based Discrete Code Reconstruction
 
+![Approach illustration. Generated with Gemini based on the schema from the Voxtral TTS paper](Generated_Image_wdsro4wdsro4wdsr.png)
+
 **Disclaimer**: It is a research experiment!
 
 Reconstruct audio by training AE discrete bottleneck codes [num_frames, 37] using gradient descent through Voxtral's frozen decoder. This approach replaces the missing encoder with optimization-based code learning for a specific audio. Here we directly train codes for the select audio during many single-sample epochs.
