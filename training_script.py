@@ -15,12 +15,6 @@ Training objective:
 """
 
 """
-L1 vs L2
-LR higher (current best 0.01)
-No SpecTok loss component
-Is everything just because Percept?
-Speaker emb loss
-
 RUN:
 
 !download weights to the voxtral-tts-weights (mistralai/Voxtral-4B-TTS-2603) folder 
@@ -28,8 +22,8 @@ RUN:
 python training_script.py \
   --reference-audio casual_female_clean.wav \
   --model-path voxtral-tts-weights \
-  --num-epochs 5000 \
-  --device mps --learning-rate 0.1 --reconstruction-weight 0.5 --speaker-weight 0.5
+  --num-epochs 15000 \
+  --device mps --learning-rate 0.1 --reconstruction-weight 0.5 --speaker-weight 0.5 --num-frames 60
 """
 
 import argparse
@@ -90,7 +84,7 @@ class TrainingConfig:
     # Optimization
     optimizer: str = "adam"
     grad_clip: float = 1.0
-    use_cosine_restarts: bool = True  # Cosine annealing with warm restarts (helps escape local minima!)
+    use_cosine_restarts: bool = False  # Cosine annealing with warm restarts (helps escape local minima!). But it is better to avoid it according to experiments
     restart_period: int = 50  # Restart LR every 50 epochs
     
     # Gumbel-Softmax temperature for semantic codes
@@ -153,7 +147,7 @@ class LearnableCodesModel(nn.Module):
         
         # Acoustic: learnable continuous values (initialize larger for better gradient flow)
         self.acoustic_values = nn.Parameter(
-            torch.randn(num_frames, 36) #* 0.5  # Larger init so tanh doesn't saturate at 0
+            torch.randn(num_frames, 36) * 0.1  # Larger init so tanh doesn't saturate at 0
         )
         
     def forward(self, temperature: Optional[float] = None, tokenizer=None) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
@@ -204,6 +198,8 @@ class LearnableCodesModel(nn.Module):
         
         # For compatibility with quantizer.decode(), use integer codes
         semantic_codes = hard_codes.float()  # [T]
+
+        logger.info(f"Semantic codes: {hard_codes}")
         
         # ===== Acoustic part: FSQ with tanh + STE =====
         # Apply tanh normalization
@@ -215,6 +211,10 @@ class LearnableCodesModel(nn.Module):
         
         # STE: forward uses quantized, backward uses continuous
         acoustic_codes = acoustic_scaled + (acoustic_quantized - acoustic_scaled).detach()  # [T, 36]
+
+        num_extreme_acoustic = torch.sum(acoustic_codes==0)+torch.sum(acoustic_codes==21)
+
+        logger.info(f"Number of extreme acoustic tokens: {num_extreme_acoustic}")
         
         # ===== Combine codes: [T, 1] + [T, 36] = [T, 37] =====
         codes = torch.cat([semantic_codes.unsqueeze(1), acoustic_codes], dim=1)  # [T, 37]
@@ -460,7 +460,7 @@ def train(config: TrainingConfig):
     
     # Load reference audio
     logger.info(f"Loading reference audio: {config.reference_audio}")
-    target_duration = (config.num_frames - 1) / FRAME_RATE
+    target_duration = config.num_frames/ FRAME_RATE # (config.num_frames - 1) / FRAME_RATE - before it includes special EOA
     ref_waveform, ref_sr = load_reference_audio(
         config.reference_audio,
         target_duration=target_duration,
@@ -477,6 +477,7 @@ def train(config: TrainingConfig):
     # This ensures consistency between reconstruction loss and speaker embedding
     expected_duration = config.num_frames * 80 * 0.001  # num_frames * 80ms per frame
     expected_samples = int(expected_duration * SAMPLING_RATE)
+    # print(expected_samples)
     ref_waveform = ref_waveform[:expected_samples]
     
     # Extract target speaker embedding (for monitoring only)
@@ -535,7 +536,7 @@ def train(config: TrainingConfig):
     
     # Setup learning rate scheduler (cosine annealing with optional warm restarts)
     if config.use_cosine_restarts:
-        min_lr = config.learning_rate * 0.1
+        min_lr = config.learning_rate * 0.1 # reduced
         scheduler = CosineAnnealingWarmRestarts(
             optimizer, 
             T_0=config.restart_period,  # First restart after N epochs
@@ -544,7 +545,7 @@ def train(config: TrainingConfig):
         )
         logger.info(f"Using Cosine Annealing with Warm Restarts (T_0={config.restart_period})")
     else:
-        min_lr = config.learning_rate * 0.1  # Decay to 10% of base LR
+        min_lr = config.learning_rate * 0.01  # Further Decay introduced
         # Use max_steps if specified, otherwise use num_epochs for scheduler T_max
         T_max = config.max_steps if config.max_steps else config.num_epochs
         scheduler = CosineAnnealingLR(optimizer, T_max=T_max, eta_min=min_lr)
@@ -569,6 +570,7 @@ def train(config: TrainingConfig):
         
         # Compute losses
         min_len = min(len(generated_waveform), len(ref_waveform))
+        print(len(generated_waveform), len(ref_waveform)) # initially they had different length here
         recon_loss = F.l1_loss(
             generated_waveform[:min_len],
             ref_waveform[:min_len],

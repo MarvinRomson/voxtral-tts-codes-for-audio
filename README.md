@@ -12,8 +12,10 @@ Reconstruct audio by training AE discrete bottleneck codes [num_frames, 37] usin
 
 ## Files
 
+- **`prepare_audio.py`** - Prepare raw audio recordings for training (resample, convert to WAV)
 - **`training_script.py`** - Train learnable codes to reconstruct audio
 - **`voice_to_audio.py`** - Decode voice embeddings -> waveforms
+- **`codes_to_embeddings.py`** - Convert trained codes back to voice embeddings
 - **`audio_tokenizer.py`** - Voxtral codec
 - **`reconstruct_codes.py`** - Invert embeddings to discrete codes
 - **`audio_generation.py`** - Components related to autoregressive (LLM) transformer for audio generation (some parts used in audio autoencoder - tokenizer)
@@ -21,7 +23,9 @@ Reconstruct audio by training AE discrete bottleneck codes [num_frames, 37] usin
 - **`codecs2audio.ipynb`** - Jupyter Notebook with audio reconstruction from embeddings, codes corruption experiments
 - **`casual_female_clean.wav`** - Training reference audio (reconstructed from the embeddings `voice_embeddings/casual_female.pt`)
 - **`casual_female_corrupted.wav`** - Corrupted through randomization of the semantic and some acoustic codes
-- **`casual_female_reconstructed.wav`** - Reconstructed output using the training (after 5000 epochs)
+- **`casual_female_reconstructed.wav`** - Reconstructed output using the training (after 5000 epochs, better 15000)
+- **`GENERATED-original_casual_female.wav`** - Audio generated with Voxtral TTS for the original casual_female audio
+- **`GENERATED-reconstructed_casual_female.wav`** - Audio generated with Voxtral TTS for the reconstructed (trained by the proposed pipeline) casual_female audio
 
 ## Quick Start
 
@@ -34,6 +38,27 @@ pip install -r requirements.txt
 # From: https://huggingface.co/mistralai/Voxtral-4B-TTS-2603
 hf download mistralai/Voxtral-4B-TTS-2603 --local-dir "voxtral-tts-weights"
 ```
+
+### Prepare Your Audio
+
+Convert any audio file to 24kHz mono WAV for training:
+
+```bash
+# Basic conversion
+python prepare_audio.py \
+  --input my_recording.mp3 \
+  --output prepared_audio.wav
+
+# With silence trimming and normalization
+python prepare_audio.py \
+  --input my_recording.mp3 \
+  --output prepared_audio.wav \
+  --normalize \
+  --duration 8.0 \
+  --target-peak 0.08
+```
+
+This is the audio used to reconstruct codes. In my experiments normalization and setting a `--target-peak` helped. Target peak reduces audio amplitude, making the audio quit, but that helps to map target peak of the provided references audio.
 
 ### Train Audio Reconstruction
 
@@ -50,13 +75,43 @@ Output saved to: `checkpoints/final_output.wav`
 Saved trained codes: `checkpoints/final_codes.pt` - example how to read them at the bottom of `codecs2audio.ipynb`
 Example result (5000 epochs): `casual_female_reconstructed.wav` in root folder
 
-### Decode Voice Embeddings
+### Convert Trained Codes to Embeddings
+
+After training, convert codes back to voice embeddings:
+
+```bash
+python codes_to_embeddings.py \
+  --codes checkpoints/final_codes.pt \
+  --embedding-weight voxtral-tts-weights/consolidated.safetensors \
+  --output voice_embeddings/my_trained_voice.pt \
+  --add-end-token
+```
+
+The output `.pt` file matches the format of pre-computed voice embeddings and can be used with `voice_to_audio.py`.
+
+### Created embeddings can be used as voice reference in Voxtral TTS pipleine to do voice cloning and TTS
+
+If using vllm-omni:
+- Replace one of the real embeddings for the voice in the folder with voice embeddings (you need to use the same name)
+- Open `.venv/lib/python3.11/site-packages/mistral_common/tokens/tokenizers/audio.py` - the installed with vllm-omni source code for the mistral_common - and update the num_frames parameter to the actual number of frames you had in your embedding (you can take `codes.shape[1] + 1` (for EOA)).
+
+### Decode Voice Embeddings and other experiments
 
 Check `codecs2audio.ipynb` notebook for details.
+
+## Notes
+
+The reconstructed audio sometimes has noisy artifacts. More epochs helps. Further research may be helpful.
+
+However it works in the current state as well. Because the autoregressive backbone summarize codes embeddings and is trained on not-noisy data, the artifacts may be compensated and the final audio appears pretty clean. 
 
 ## Requirements
 
 Full list of requirements is in `requirements.txt` file.
+
+## AI usage disclaimer
+
+Research and code involved LLM usage to create a baseline implementations. However huge research effort was made to make it work: to do experiments, to fix LLM-generated code, and even nudge LLM to generate the code in the right direction while preparing the baselines and boilerplates.
 
 ## License (following Voxtral license)
 
